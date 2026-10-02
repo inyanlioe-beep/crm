@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    name: Typecheck, lint, test, build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Build
+        run: npm run build
+        env:
+          # Build does not need a live DB; env is validated lazily at runtime.
+          SESSION_SECRET: build-time-placeholder-at-least-32-characters
+
+  integration:
+    name: Integration tests (Postgres + RLS)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: crm
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_ADMIN_URL: postgres://postgres:postgres@localhost:5432/crm
+      SESSION_SECRET: integration-secret-at-least-32-characters-long
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run migrations + RLS
+        run: npm run db:migrate
+
+      - name: Create app_user role
+        run: |
+          psql "$DATABASE_ADMIN_URL" -f src/server/db/setup-role.sql
+
+      - name: Integration tests (RLS-enforced role)
+        run: npm test
+        env:
+          TEST_DATABASE_URL: postgres://app_user:password@localhost:5432/crm
+          TEST_ADMIN_DATABASE_URL: postgres://postgres:postgres@localhost:5432/crm
